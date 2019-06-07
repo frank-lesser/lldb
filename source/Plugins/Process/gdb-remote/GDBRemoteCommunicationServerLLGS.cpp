@@ -51,9 +51,7 @@ using namespace lldb_private;
 using namespace lldb_private::process_gdb_remote;
 using namespace llvm;
 
-//----------------------------------------------------------------------
 // GDBRemote Errors
-//----------------------------------------------------------------------
 
 namespace {
 enum GDBRemoteServerError {
@@ -65,9 +63,7 @@ enum GDBRemoteServerError {
 };
 }
 
-//----------------------------------------------------------------------
 // GDBRemoteCommunicationServerLLGS constructor
-//----------------------------------------------------------------------
 GDBRemoteCommunicationServerLLGS::GDBRemoteCommunicationServerLLGS(
     MainLoop &mainloop, const NativeProcessProtocol::Factory &process_factory)
     : GDBRemoteCommunicationServerCommon("gdb-remote.server",
@@ -190,6 +186,9 @@ void GDBRemoteCommunicationServerLLGS::RegisterPacketHandlers() {
   RegisterMemberFunctionHandler(
       StringExtractorGDBRemote::eServerPacketType_jTraceConfigRead,
       &GDBRemoteCommunicationServerLLGS::Handle_jTraceConfigRead);
+
+  RegisterMemberFunctionHandler(StringExtractorGDBRemote::eServerPacketType_g,
+                                &GDBRemoteCommunicationServerLLGS::Handle_g);
 
   RegisterPacketHandler(StringExtractorGDBRemote::eServerPacketType_k,
                         [this](StringExtractorGDBRemote packet, Status &error,
@@ -1893,6 +1892,61 @@ GDBRemoteCommunicationServerLLGS::Handle_qsThreadInfo(
   // FIXME for now we return the full thread list in the initial packet and
   // always do nothing here.
   return SendPacketNoLock("l");
+}
+
+GDBRemoteCommunication::PacketResult
+GDBRemoteCommunicationServerLLGS::Handle_g(StringExtractorGDBRemote &packet) {
+  Log *log(GetLogIfAnyCategoriesSet(LIBLLDB_LOG_THREAD));
+
+  // Move past packet name.
+  packet.SetFilePos(strlen("g"));
+
+  // Get the thread to use.
+  NativeThreadProtocol *thread = GetThreadFromSuffix(packet);
+  if (!thread) {
+    LLDB_LOG(log, "failed, no thread available");
+    return SendErrorResponse(0x15);
+  }
+
+  // Get the thread's register context.
+  NativeRegisterContext &reg_ctx = thread->GetRegisterContext();
+
+  std::vector<uint8_t> regs_buffer;
+  for (uint32_t reg_num = 0; reg_num < reg_ctx.GetUserRegisterCount();
+       ++reg_num) {
+    const RegisterInfo *reg_info = reg_ctx.GetRegisterInfoAtIndex(reg_num);
+
+    if (reg_info == nullptr) {
+      LLDB_LOG(log, "failed to get register info for register index {0}",
+               reg_num);
+      return SendErrorResponse(0x15);
+    }
+
+    if (reg_info->value_regs != nullptr)
+      continue; // skip registers that are contained in other registers
+
+    RegisterValue reg_value;
+    Status error = reg_ctx.ReadRegister(reg_info, reg_value);
+    if (error.Fail()) {
+      LLDB_LOG(log, "failed to read register at index {0}", reg_num);
+      return SendErrorResponse(0x15);
+    }
+
+    if (reg_info->byte_offset + reg_info->byte_size >= regs_buffer.size())
+      // Resize the buffer to guarantee it can store the register offsetted
+      // data.
+      regs_buffer.resize(reg_info->byte_offset + reg_info->byte_size);
+
+    // Copy the register offsetted data to the buffer.
+    memcpy(regs_buffer.data() + reg_info->byte_offset, reg_value.GetBytes(),
+           reg_info->byte_size);
+  }
+
+  // Write the response.
+  StreamGDBRemote response;
+  response.PutBytesAsRawHex8(regs_buffer.data(), regs_buffer.size());
+
+  return SendPacketNoLock(response.GetString());
 }
 
 GDBRemoteCommunication::PacketResult

@@ -143,6 +143,13 @@ public:
     return false;
   }
 
+  virtual void SymbolsDidLoad(const ModuleList &module_list) { return; }
+
+  virtual lldb::ThreadPlanSP GetStepThroughTrampolinePlan(Thread &thread,
+                                                          bool stop_others) = 0;
+
+  /// Identify whether a value is a language implementation detaul
+  /// that should be hidden from the user interface by default.
   virtual bool IsRuntimeSupportValue(ValueObject &valobj) { return false; }
 
   virtual void ModulesDidLoad(const ModuleList &module_list) {}
@@ -161,10 +168,15 @@ public:
     return false;
   }
 
+  // Given the name of a runtime symbol (e.g. in Objective-C, an ivar offset
+  // symbol), try to determine from the runtime what the value of that symbol
+  // would be. Useful when the underlying binary is stripped.
+  virtual lldb::addr_t LookupRuntimeSymbol(ConstString name) {
+    return LLDB_INVALID_ADDRESS;
+  }
+
 protected:
-  //------------------------------------------------------------------
   // Classes that inherit from LanguageRuntime can see and modify these
-  //------------------------------------------------------------------
 
   LanguageRuntime(Process *process);
   Process *m_process;
